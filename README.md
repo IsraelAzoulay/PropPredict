@@ -1,6 +1,5 @@
-house-price-prediction
+PropPredict
 ==============================
-
 Makes predictions about house prices
 
 Project Organization
