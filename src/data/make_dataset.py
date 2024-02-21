@@ -1,14 +1,23 @@
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np  
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.model_selection import train_test_split, cross_val_score
+import matplotlib.pyplot as plt
+import seaborn as sns  
+from scipy import stats
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.tools.tools import add_constant
+import category_encoders as ce
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.svm import SVR
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.neighbors import KNeighborsRegressor
 from xgboost import XGBRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.model_selection import GridSearchCV
+import time
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
 def load_dataset(file_path):
@@ -20,9 +29,7 @@ def load_dataset(file_path):
     - DataFrame: loaded dataset or None if an error occurs.
     """
     try:
-        # Reading the CSV file into a DataFrame
         data_set = pd.read_csv(file_path)
-        # Display the first few rows of the DataFrame to verify it's loaded correctly
         print(data_set.head())
         return data_set
     except FileNotFoundError:
@@ -54,195 +61,23 @@ def check_data_quality(data_set):
         print("Data set is None, cannot perform data quality checks.")
 
 
-def plot_price_distribution(data_set, column='price', log_transform=False):
+def plot_categorical_distribution(df, column, top_n=20):
     """
-    Plot the distribution of the target column, optionally applying a logarithmic transformation.
-    Parameters:
-    - data_set: DataFrame, the dataset containing the target column.
-    - column: str, the name of the target column to plot. Default is 'price'.
-    - log_transform: bool, whether to apply a logarithmic transformation to the target column before plotting.
+    Function for the EDA step - for plotting categorical variables with too many
+    categories (such as 'city' colmns etc)
     """
-    # Apply logarithmic transformation if specified
-    if log_transform:
-        # Applying log transformation for price
-        data_set['Logprice'] = np.log1p(data_set['price'])
-        target_column = 'Logprice'
-        title_suffix = ' (Log Transformed)'
-    else:
-        target_column = column
-        title_suffix = ''
-
-    # Set the aesthetic style of the plots
-    sns.set_style("whitegrid")
-
-    # Plotting the histogram
-    plt.figure(figsize=(10, 6))
-    sns.histplot(data_set[target_column], kde=True)
-    plt.title(f'Distribution of {column}{title_suffix}')
-    plt.xlabel(f'{column}{title_suffix}')
-    plt.ylabel('Frequency')
-    plt.show()
-
-    # Plotting the box plot
-    plt.figure(figsize=(10, 6))
-    sns.boxplot(x=data_set[target_column])
-    plt.title(f'Box Plot of {column}{title_suffix}')
-    plt.xlabel(f'{column}{title_suffix}')
+    # If there are too many categories, we'll take the top `top_n` and group the rest as 'Other'
+    top_categories = df[column].value_counts().head(top_n).index
+    df_top_categories = df.copy()
+    df_top_categories[column] = df[column].where(df[column].isin(top_categories), 'Other')
+    plt.figure(figsize=(15, 8))
+    sns.countplot(data=df_top_categories, x=column, order=df_top_categories[column].value_counts().index)
+    plt.title(f'Frequency of top {top_n} categories in {column}')
+    plt.xticks(rotation=90)  
     plt.show()
 
 
-def evaluate_skewness(data_set):
-    """
-    Evaluate the skewness of numerical features in the dataset.
-    Parameters:
-    - data_set: DataFrame, the dataset to be evaluated.
-    Returns:
-    - None, prints the skewness values for each numerical feature.
-    """
-    skewness = data_set.select_dtypes(include=['int64', 'float64']).skew().sort_values(ascending=False)
-    print("Skewness of numerical features:")
-    print(skewness)
-
-
-def plot_feature_distributions(data_set):
-    """
-    Plot histograms for numerical features in the dataset to visually inspect their distributions.
-    Parameters:
-    - data_set: DataFrame, the dataset containing the features.
-    """
-    num_features = data_set.select_dtypes(include=['int64', 'float64']).columns
-    data_set[num_features].hist(bins=15, figsize=(15, 10), layout=(4, 4))
-    plt.tight_layout()
-    plt.show()
-
-
-def encode_categorical_columns(data_set):
-    # Function to encode categorical columns in the dataset
-    for col in data_set.select_dtypes(include=['object', 'category']).columns:
-        data_set[col], _ = data_set[col].factorize()
-    return data_set
-
-
-def calculate_mutual_info_scores(data_set, target_column, discrete_feature_names):
-    # Function to calculate mutual information scores
-    data_set_encoded = encode_categorical_columns(data_set.copy())
-    
-    # Convert the names of the discrete features to indices
-    discrete_features_indices = [data_set_encoded.columns.get_loc(name) for name in discrete_feature_names]
-
-    # Compute the mutual information scores with the target
-    mutual_info_scores = mutual_info_regression(
-        data_set_encoded.drop(target_column, axis=1), 
-        data_set_encoded[target_column], 
-        discrete_features=discrete_features_indices
-    )
-    
-    # Create a Series with the scores and columns
-    mutual_info_scores_series = pd.Series(mutual_info_scores, index=data_set_encoded.drop(target_column, axis=1).columns)
-
-    # Return the scores sorted in descending order
-    return mutual_info_scores_series.sort_values(ascending=False)
-
-
-def remove_outliers_z_score_threshold(data_set, threshold=3):
-    """
-    Remove outliers from the dataset using Z-score method with a customizable threshold.
-    Parameters:
-    - data_set: DataFrame, the dataset to remove outliers from.
-    - threshold: int, the threshold value for Z-score. Default is 3.
-    Returns:
-    - DataFrame: dataset with outliers removed.
-    """
-    # Selecting only numerical columns for outlier removal
-    numerical_columns = data_set.select_dtypes(include=['int64', 'float64']).columns
-    
-    # Calculating Z-score for each numerical column
-    z_scores = data_set[numerical_columns].apply(lambda x: np.abs((x - x.mean()) / x.std()))
-    
-    # Removing rows where any Z-score is greater than the threshold
-    data_set_cleaned = data_set[(z_scores < threshold).all(axis=1)]
-    
-    return data_set_cleaned
-
-
-def target_encode(data_set, feature, target):
-    """
-    Target encode a categorical feature in the dataset based on the target variable.
-    Parameters:
-    - data_set: DataFrame, the dataset containing the feature to be encoded.
-    - feature: str, the name of the categorical feature to encode.
-    - target: str, the name of the target variable.
-    Returns:
-    - DataFrame: dataset with the categorical feature encoded.
-    """
-    if feature not in data_set.columns:
-        raise KeyError(f"The feature '{feature}' is not found in the DataFrame.")
-    
-    data_set_copy = data_set.copy()  # Create a copy of the DataFrame
-    target_mean = data_set_copy.groupby(feature)[target].mean()
-    encoded_feature_name = f'{feature}_encoded'
-    data_set_copy.loc[:, encoded_feature_name] = data_set_copy[feature].map(target_mean)
-    data_set_copy.drop(columns=[feature], inplace=True)  # Remove the original feature
-    return data_set_copy
-
-
-def train_evaluate_compare_algorithms(data_set, target_column='price'):
-    # Splitting the data into features and target
-    X = data_set.drop(columns=[target_column])
-    y = data_set[target_column]
-
-    # Splitting the dataset into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # Initializing models
-    models = {
-        'Linear Regression': LinearRegression(),
-        'Random Forest Regression': RandomForestRegressor(random_state=42),
-        'Gradient Boosting Regression': GradientBoostingRegressor(random_state=42),
-        'Support Vector Regression': SVR(),
-        'XGBoost Regression': XGBRegressor(random_state=42)
-    }
-
-    # Training and evaluating models
-    scores = {}
-    best_model_name = None
-    best_cross_val_score = float('-inf')
-
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-        mse = mean_squared_error(y_test, y_pred)
-        mae = mean_absolute_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-
-        # Cross-validation
-        cross_val_scores = cross_val_score(model, X, y, cv=5, scoring='r2')
-        mean_cross_val_score = np.mean(cross_val_scores)
-        scores[name] = {
-            'Mean Squared Error': mse, 
-            'Mean Absolute Error': mae, 
-            'R-squared': r2,
-            'Mean Cross-Validated R-squared': mean_cross_val_score
-        }
-
-        # Update best model based on cross-validation
-        if mean_cross_val_score > best_cross_val_score:
-            best_cross_val_score = mean_cross_val_score
-            best_model_name = name
-
-    # Displaying scores
-    for name, score in scores.items():
-        print(f"Scores for {name}:")
-        for metric, value in score.items():
-            print(f"{metric}: {value}")
-        print("-----------------------")
-
-    print(f"The best model based on cross-validation is: {best_model_name}")
-    return scores
-
-
-
-
+### 1. Basic undersatning of the dataset
 ## Inspecion of the dataset
 file_path = "../../data/raw/data.csv"
 data_set = load_dataset(file_path)
@@ -251,56 +86,267 @@ check_data_quality(data_set)
 ## Additional inspection of the dataset
 data_set.info()
 print("Dataset columns:", data_set.columns)
+data_set.describe()
 
-# Manually specify which int64 features are truly discrete based on your knowledge of the dataset
-true_discrete_features = ['bedrooms', 'bathrooms', 'floors', 'view', 'condition']
 
-# Plotting the distribution of the 'price' column
-plot_price_distribution(data_set, column='price')
+### 2. Date Preproccessing 
+# Convert the 'date' column to a datetime object
+data_set['date'] = pd.to_datetime(data_set['date'])
+# Verify the conversion by displaying the data types of each column
+print(data_set.dtypes)
 
-# Evaluate skewness & distributions of numerical features
-evaluate_skewness(data_set)
-plot_feature_distributions(data_set)
 
-# Calculate mutual information scores for the 'price' column
-mutual_info_scores = calculate_mutual_info_scores(data_set, 'price', true_discrete_features)
-print(mutual_info_scores)
-# Plot the mutual information scores
-plt.figure(figsize=(12, 8))
-mutual_info_scores.sort_values().plot(kind='barh')
+### 3. Exploratory Data Analysis (EDA)
+# Calculate the Mutual Information (MI) scores between each of the
+# independent variables and the continuous target variable 'price'.
+# Copy the dataset for MI calculation to avoid altering the original dataset
+mi_data_set = data_set.copy()
+for column in ['date', 'street', 'city', 'statezip', 'country']:
+    mi_data_set[column], _ = mi_data_set[column].factorize()
+# Creating a boolean array for discrete features in the copied dataset
+discrete_features_mi = [mi_data_set[col].dtype == 'int64' for col in mi_data_set.columns.drop('price')]
+mi_scores = mutual_info_regression(mi_data_set.drop('price', axis=1), mi_data_set['price'], discrete_features=discrete_features_mi, random_state=0)
+mi_scores_series = pd.Series(mi_scores, index=mi_data_set.columns.drop('price')).sort_values()
+print(mi_scores_series)
+plt.figure(figsize=(10, 8))
+plt.barh(mi_scores_series.index, mi_scores_series.values)
 plt.title('Mutual Information Scores')
-plt.xlabel('Mutual Information Score')
+plt.xlabel('MI Score')
 plt.ylabel('Features')
 plt.show()
 
-# Selecting the top features based on mutual information scores
-# (I update it based on the new mutual information scores plot)
-selected_features = ['price', 'street','statezip','city','sqft_living','sqft_above',
-                     'bathrooms','yr_built','sqft_lot','bedrooms']
+# Checking the relationship between the continuous numerical
+# variables and the target variable 'price' with pearson correlation and vizualisation.
+continuous_vars = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'floors', 'sqft_above', 'sqft_basement', 'yr_built']
+# Generate regression plots and print Pearson correlation values
+for var in continuous_vars:
+    correlation, p_value = stats.pearsonr(data_set[var], data_set['price'])
+    print(f'Pearson correlation of {var} with Price: correlation={correlation}, p-value={p_value}')
+    plt.figure(figsize=(8, 4))
+    sns.regplot(x=var, y='price', data=data_set, line_kws={"color": "red"})
+    plt.title(f'Regression plot of {var} vs. Price')
+    plt.xlabel(var)
+    plt.ylabel('Price')
+    plt.show()
 
-# Creating the refined dataset based on selected features
-refined_data_set = data_set[selected_features]
+# Checking the relationship between the categorical variables
+# and the target variable 'price' with ANOVA statistics and vizualisation.
+categorical_vars = ['waterfront', 'view', 'condition']
+# Generate box plots and compute ANOVA statistics
+for var in categorical_vars:
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(x=var, y='price', data=data_set)
+    plt.title(f'Box plot of Price vs. {var}')
+    plt.show()
+    groups = data_set.groupby(var)['price'].apply(list)
+    f_value, p_value = stats.f_oneway(*groups)
+    print(f'ANOVA statistic for {var} with Price: F-value={f_value}, p-value={p_value}')
 
-## Target encoding for 'statezip' and 'city' features
-refined_data_set_encoded = target_encode(refined_data_set, 'statezip', 'price')
-refined_data_set_encoded = target_encode(refined_data_set_encoded, 'city', 'price')
-refined_data_set_encoded = target_encode(refined_data_set_encoded, 'street', 'price')
+# Checking the relationship between the discrete variables
+# and the target variable 'price' with pearson correlation and vizualisation.
+discrete_var = 'yr_renovated'
+# Generate a bar plot
+plt.figure(figsize=(10, 6))
+sns.barplot(x=discrete_var, y='price', data=data_set)
+plt.title(f'Bar plot of Price vs. {discrete_var}')
+plt.show()
+correlation, p_value = stats.pearsonr(data_set[discrete_var], data_set['price'])
+print(f'Pearson correlation of {discrete_var} with Price: correlation={correlation}, p-value={p_value}')
+# Conclusion: We don't see a linear relationship between any of those
+# variables and the target variable (and this is why the pearson
+# correlation don't capture the relatioships as it capturs only linear ones),
+# but we do see outliers in some of them. We'll handle them later once we make
+# the features selection.
 
-# Removing outliers from the refined dataset using Z-score method.
-refined_data_set_encoded_cleaned = remove_outliers_z_score_threshold(refined_data_set_encoded)
+# First feature selection and dataset update based on the conclusion
+selected_features = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'sqft_above', 'street', 'city', 'statezip', 'yr_built', 'price']
+data_set = data_set[selected_features]
+# Ensuring the updated dataset contains only the 'selected_features' 
+print(data_set.info())
 
-# Train, evaluate, and compare algorithms
-train_evaluate_compare_algorithms(refined_data_set_encoded_cleaned, 'price')
+# Checking for multicollinearity among numerical independent variables by calculating VIF.
+# Selecting only the numerical columns
+numerical_vars = data_set.select_dtypes(include=['int64', 'float64']).columns.tolist()
+numerical_vars = [var for var in numerical_vars if var != 'price']  # Exclude 'price'
+# Check for constant or empty columns in numerical_vars
+for var in numerical_vars:
+    if data_set[var].nunique() <= 1:  # Column has 0 or 1 unique values
+        print(f"Column {var} is constant or empty and will be excluded from VIF calculation.")
+        numerical_vars.remove(var)
+# VIF calculation if there are enough variables left
+if len(numerical_vars) > 0:
+    X = add_constant(data_set[numerical_vars])
+    vif_data = pd.DataFrame({
+        'Feature': X.columns.drop('const'),  
+        'VIF': [variance_inflation_factor(X.values, i) for i in range(1, X.shape[1])]  
+    })
+    print(vif_data)
+else:
+    print("Not enough variables for VIF calculation after excluding constant/empty columns.")
+
+# Identifying outliers for continuous and discrete variables in the updated
+# dataset - visually and statistically
+continuous_discrete_vars = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'sqft_above', 'yr_built']
+for var in continuous_discrete_vars:
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data_set[var])
+    plt.title(f'Box plot of {var}')
+    plt.show()
+# Calculate IQR and identify outliers
+for var in continuous_discrete_vars:
+    Q1 = data_set[var].quantile(0.25)
+    Q3 = data_set[var].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = data_set[(data_set[var] < lower_bound) | (data_set[var] > upper_bound)]
+    print(f'Number of outliers in {var} using IQR: {outliers.shape[0]}')
+# Calculate Z-score and identify outliers
+for var in continuous_discrete_vars:
+    z_scores = np.abs(stats.zscore(data_set[var]))
+    outliers = data_set[z_scores > 3]
+    print(f'Number of outliers in {var} using Z-score: {outliers.shape[0]}')
+# Check distribution for skewness
+for var in continuous_discrete_vars:
+    skewness = data_set[var].skew()
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data_set[var], kde=True)
+    plt.title(f'Distribution of {var} (Skewness: {data_set[var].skew():.2f})')
+    plt.show()
+    print(f'Skewness of {var}: {skewness}')
+# Conclusion: All the continuous and discrete variables have outliers except of the
+# 'yr_built' discrete variable.
+
+# Identifying outliers for categorical variables in the updated dataset- visually 
+categorical_vars = ['street', 'city', 'statezip']
+# Set the number of categories I want to display
+TOP_N_CATEGORIES = 20
+# Generate bar plots for frequency visualization, and box plots for 'price' distribution across categories
+for var in categorical_vars:
+    plot_categorical_distribution(data_set, var)
+    top_categories = data_set[var].value_counts().nlargest(TOP_N_CATEGORIES).index
+    # Filter the data set for only the top N categories
+    data_top_n = data_set[data_set[var].isin(top_categories)]
+    plt.figure(figsize=(12, 8))  
+    sns.boxplot(x='price', y=var, data=data_top_n, orient='h')  
+    plt.title(f'Box plot of Price vs. {var} (Top {TOP_N_CATEGORIES} categories)')
+    plt.show()
+
+# Handling outliers using the Z-score method
+# List of variables to check for outliers, excluding 'yr_built' as it has no outliers
+variables_to_check = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'sqft_above']
+# Compute Z-scores of the dataset for the specified variables, and get absolute Z-scores
+# to identify outliers
+z_scores = stats.zscore(data_set[variables_to_check])
+abs_z_scores = np.abs(z_scores)
+# Filter the dataset: keep only the rows with all Z-scores less than 3
+filtered_entries = (abs_z_scores < 3).all(axis=1)
+dataset_cleaned = data_set[filtered_entries]
+print(f"Original dataset shape: {data_set.shape}")
+print(f"Cleaned dataset shape: {dataset_cleaned.shape}")
+# Now, 'dataset_cleaned' is my working dataset 
+
+# Encoding the independent categorical variables in our cleaned dataset 'dataset_cleaned'
+# using 'MEstimateEncoder'.
+encoder = ce.MEstimateEncoder(cols=['city', 'street', 'statezip'], m=0.5)
+dataset_encoded = encoder.fit_transform(dataset_cleaned.drop('price', axis=1), dataset_cleaned['price'])
+# Add the target variable 'price' back into the endoded dataset
+dataset_encoded['price'] = dataset_cleaned['price']
+# Frees up the memory occupied by the previous 'dataset_cleaned' as it is not needed anymore
+del dataset_cleaned  
+# Now 'dataset_encoded' is my working dataset with encoded features
+
+# Extracting the target variable, saving it in 'y', and normalizing the 'X' feature matrix
+y = dataset_encoded['price']
+X = dataset_encoded.drop('price', axis=1)
+print("Shape of the feature matrix (X):", X.shape)
+print("Shape of the target variable (y):", y.shape)
+scaler = StandardScaler()
+# Fit the scaler to the data and transform it
+X_normalized = scaler.fit_transform(X)
+# Converting the normalized features back to a DataFrame for better readability
+X_normalized = pd.DataFrame(X_normalized, columns=X.columns)
+print("Shape of the normalized feature matrix (X):", X_normalized.shape)
 
 
+### 4. Model Development 
+# Splitting the dataset into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(X_normalized, y, test_size=0.2, random_state=2)
+print("Number of training samples:", X_train.shape[0])
+print("Number of test samples:", X_test.shape[0])
+# Initialize the models with default parameters, except where specified
+models = {
+    "Multiple Linear Regression": LinearRegression(),
+    "Random Forest": RandomForestRegressor(random_state=2),
+    "Decision Tree Regression": DecisionTreeRegressor(random_state=2),
+    "Boosted Decision Tree Regression": GradientBoostingRegressor(random_state=2),
+    "K-nearest neighbors (KNN)": KNeighborsRegressor(),  # To be tuned using GridSearchCV
+    "XGBoost": XGBRegressor(random_state=2)
+}
+# For storing predictions
+predictions = {}
+# Train and predict with each model
+for name, model in models.items():
+    print(f"Processing {name}...")
+    start_time = time.time()
+    # Special handling for KNN with GridSearchCV
+    if name == "K-nearest neighbors (KNN)":
+        param_grid = {'n_neighbors': range(1, 31)}
+        grid_search = GridSearchCV(KNeighborsRegressor(), param_grid, cv=10, scoring='r2')
+        grid_search.fit(X_train, y_train)
+        best_knn = grid_search.best_estimator_
+        print(f"Best parameters for KNN: {grid_search.best_params_}")
+        print(f"Best score for KNN: {grid_search.best_score_:.3f}")
+        model = best_knn  # Use the best KNN model
+    # Train the model
+    else:
+        model.fit(X_train, y_train)
+    training_time = time.time() - start_time
+    print(f"{name} training completed in {training_time:.3f} seconds.")
+    # Predict and save predictions
+    predictions[name] = model.predict(X_test)
 
 
-
-
-
-
-
-
-
-
-
+### 5. Model Evaluation, Comparison, and Selection
+# Dataframe to hold the metrics
+metrics_df = pd.DataFrame(columns=["Model", "MAE", "MSE", "RMSE", "R² Score"])
+# Evaluate and store metrics for each model
+for name, pred in predictions.items():
+    mae = mean_absolute_error(y_test, pred)
+    mse = mean_squared_error(y_test, pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, pred)
+    # Create a new DataFrame for the current model's metrics and concatenate it with the existing metrics_df
+    new_row = pd.DataFrame({"Model": [name], "MAE": [mae], "MSE": [mse], "RMSE": [rmse], "R² Score": [r2]})
+    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
+# Visualization for each metric
+fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+metrics = ["MAE", "MSE", "RMSE", "R² Score"]
+colors = ['skyblue', 'orange', 'lightgreen', 'pink']
+for i, metric in enumerate(metrics):
+    axs[i//2, i%2].barh(metrics_df["Model"], metrics_df[metric], color=colors[i])
+    axs[i//2, i%2].set_xlabel(metric)
+    axs[i//2, i%2].set_title(f'Model Comparison - {metric}')
+plt.tight_layout()
+plt.show()
+# Choosing the best model based on MSE (lower is better) and R² Score (higher is better)
+best_mse_model = metrics_df.loc[metrics_df['MSE'].idxmin()]
+best_r2_model = metrics_df.loc[metrics_df['R² Score'].idxmax()]
+# Summarizing the best models based on MSE and R² Score
+print(f"The best model based on MSE is {best_mse_model['Model']} with an MSE of {best_mse_model['MSE']:.3f}.")
+print(f"The best model based on R² Score is {best_r2_model['Model']} with an R² Score of {best_r2_model['R² Score']:.3f}.")
+# If the same model scores best on both metrics, it can be considered the overall best model
+if best_mse_model['Model'] == best_r2_model['Model']:
+    best_model_name = best_mse_model['Model']
+    best_model_r2_score = best_r2_model['R² Score']
+    print(f"\nOverall, the best model is {best_model_name} based on common criteria, with an R² Score of {best_model_r2_score:.3f}.")
+    # Plotting the performance of the best model
+    plt.figure(figsize=(10, 6))
+    plt.scatter(y_test, predictions[best_model_name], alpha=0.6)
+    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--', lw=2)  
+    plt.xlabel('Actual')
+    plt.ylabel('Predicted')
+    plt.title(f'Actual vs. Predicted Values for {best_model_name}')
+    plt.show()
+else:
+    print("\nConsideration is needed to choose the overall best model based on specific requirements.")
