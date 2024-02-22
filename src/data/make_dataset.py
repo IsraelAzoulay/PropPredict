@@ -9,7 +9,6 @@ from statsmodels.tools.tools import add_constant
 import category_encoders as ce
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.tree import DecisionTreeRegressor
@@ -18,6 +17,7 @@ from xgboost import XGBRegressor
 from sklearn.model_selection import GridSearchCV
 import time
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.linear_model import ElasticNet, Lasso, Ridge
 
 
 def load_dataset(file_path):
@@ -159,7 +159,8 @@ print(f'Pearson correlation of {discrete_var} with Price: correlation={correlati
 # the features selection.
 
 # First feature selection and dataset update based on the conclusion
-selected_features = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'sqft_above', 'street', 'city', 'statezip', 'yr_built', 'price']
+selected_features = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'sqft_above'
+                     ,'street', 'city', 'statezip', 'yr_built', 'price']
 data_set = data_set[selected_features]
 # Ensuring the updated dataset contains only the 'selected_features' 
 print(data_set.info())
@@ -167,7 +168,7 @@ print(data_set.info())
 # Checking for multicollinearity among numerical independent variables by calculating VIF.
 # Selecting only the numerical columns
 numerical_vars = data_set.select_dtypes(include=['int64', 'float64']).columns.tolist()
-numerical_vars = [var for var in numerical_vars if var != 'price']  # Exclude 'price'
+numerical_vars = [var for var in numerical_vars if var != 'price']  
 # Check for constant or empty columns in numerical_vars
 for var in numerical_vars:
     if data_set[var].nunique() <= 1:  # Column has 0 or 1 unique values
@@ -246,107 +247,113 @@ print(f"Original dataset shape: {data_set.shape}")
 print(f"Cleaned dataset shape: {dataset_cleaned.shape}")
 # Now, 'dataset_cleaned' is my working dataset 
 
-# Encoding the independent categorical variables in our cleaned dataset 'dataset_cleaned'
-# using 'MEstimateEncoder'.
-encoder = ce.MEstimateEncoder(cols=['city', 'street', 'statezip'], m=0.5)
-dataset_encoded = encoder.fit_transform(dataset_cleaned.drop('price', axis=1), dataset_cleaned['price'])
-# Add the target variable 'price' back into the endoded dataset
-dataset_encoded['price'] = dataset_cleaned['price']
-# Frees up the memory occupied by the previous 'dataset_cleaned' as it is not needed anymore
-del dataset_cleaned  
-# Now 'dataset_encoded' is my working dataset with encoded features
-
-# Extracting the target variable, saving it in 'y', and normalizing the 'X' feature matrix
-y = dataset_encoded['price']
-X = dataset_encoded.drop('price', axis=1)
+# First, split your dataset into training and test sets before any encoding or scaling
+X = dataset_cleaned.drop('price', axis=1)
+y = dataset_cleaned['price']
 print("Shape of the feature matrix (X):", X.shape)
 print("Shape of the target variable (y):", y.shape)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=2)
+print("Number of training samples:", X_train.shape[0])
+print("Number of test samples:", X_test.shape[0])
+# Now, 'X_train' and 'y_train' are your training data, 'X_test' and 'y_test' are your test data
+
+# Encoding the independent categorical variables using 'MEstimateEncoder'
+encoder = ce.MEstimateEncoder(cols=['city', 'street', 'statezip'], m=0.5)
+X_train_encoded = encoder.fit_transform(X_train, y_train)
+X_test_encoded = encoder.transform(X_test)
+
+# Normalizing the 'X' feature matrix
 scaler = StandardScaler()
-# Fit the scaler to the data and transform it
-X_normalized = scaler.fit_transform(X)
-# Converting the normalized features back to a DataFrame for better readability
-X_normalized = pd.DataFrame(X_normalized, columns=X.columns)
-print("Shape of the normalized feature matrix (X):", X_normalized.shape)
+X_train_normalized = scaler.fit_transform(X_train_encoded)
+X_test_normalized = scaler.transform(X_test_encoded)
+print("Shape of the normalized feature training matrix (X):", X_train_normalized.shape)
+print("Shape of the normalized feature testing matrix (X):", X_test_normalized.shape)
 
 
 ### 4. Model Development 
-# Splitting the dataset into training and test sets
-X_train, X_test, y_train, y_test = train_test_split(X_normalized, y, test_size=0.2, random_state=2)
-print("Number of training samples:", X_train.shape[0])
-print("Number of test samples:", X_test.shape[0])
 # Initialize the models with default parameters, except where specified
 models = {
     "Multiple Linear Regression": LinearRegression(),
     "Random Forest": RandomForestRegressor(random_state=2),
     "Decision Tree Regression": DecisionTreeRegressor(random_state=2),
     "Boosted Decision Tree Regression": GradientBoostingRegressor(random_state=2),
-    "K-nearest neighbors (KNN)": KNeighborsRegressor(),  # To be tuned using GridSearchCV
-    "XGBoost": XGBRegressor(random_state=2)
+    "K-nearest neighbors (KNN)": KNeighborsRegressor(),
+    "XGBoost": XGBRegressor(random_state=2),
+    "ElasticNet": ElasticNet(random_state=2),
+    "Lasso": Lasso(random_state=2),
+    "Ridge": Ridge(random_state=2)
 }
-# For storing predictions
-predictions = {}
-# Train and predict with each model
-for name, model in models.items():
-    print(f"Processing {name}...")
-    start_time = time.time()
-    # Special handling for KNN with GridSearchCV
-    if name == "K-nearest neighbors (KNN)":
-        param_grid = {'n_neighbors': range(1, 31)}
-        grid_search = GridSearchCV(KNeighborsRegressor(), param_grid, cv=10, scoring='r2')
-        grid_search.fit(X_train, y_train)
-        best_knn = grid_search.best_estimator_
-        print(f"Best parameters for KNN: {grid_search.best_params_}")
-        print(f"Best score for KNN: {grid_search.best_score_:.3f}")
-        model = best_knn  # Use the best KNN model
-    # Train the model
-    else:
-        model.fit(X_train, y_train)
-    training_time = time.time() - start_time
-    print(f"{name} training completed in {training_time:.3f} seconds.")
-    # Predict and save predictions
-    predictions[name] = model.predict(X_test)
-
-
-### 5. Model Evaluation, Comparison, and Selection
-# Dataframe to hold the metrics
+# Initial Model Training and Evaluation
+initial_predictions = {}
 metrics_df = pd.DataFrame(columns=["Model", "MAE", "MSE", "RMSE", "R² Score"])
-# Evaluate and store metrics for each model
-for name, pred in predictions.items():
-    mae = mean_absolute_error(y_test, pred)
-    mse = mean_squared_error(y_test, pred)
+for name, model in models.items():
+    print(f"Training {name}...")
+    model.fit(X_train_normalized, y_train)
+    preds = model.predict(X_test_normalized)
+    initial_predictions[name] = preds
+    # Evaluate
+    mae = mean_absolute_error(y_test, preds)
+    mse = mean_squared_error(y_test, preds)
     rmse = np.sqrt(mse)
-    r2 = r2_score(y_test, pred)
-    # Create a new DataFrame for the current model's metrics and concatenate it with the existing metrics_df
-    new_row = pd.DataFrame({"Model": [name], "MAE": [mae], "MSE": [mse], "RMSE": [rmse], "R² Score": [r2]})
-    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
-# Visualization for each metric
+    r2 = r2_score(y_test, preds)
+    # Create a new DataFrame for the current model's metrics
+    new_metrics = pd.DataFrame({
+        "Model": [name],
+        "MAE": [mae],
+        "MSE": [mse],
+        "RMSE": [rmse],
+        "R² Score": [r2]
+    })
+    # Concatenate the new metrics to the existing DataFrame
+    metrics_df = pd.concat([metrics_df, new_metrics], ignore_index=True)
+    # Print evaluation results
+    print(f"{name} - MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}")
+
+# Visualization of Initial Evaluation Results
 fig, axs = plt.subplots(2, 2, figsize=(15, 10))
-metrics = ["MAE", "MSE", "RMSE", "R² Score"]
-colors = ['skyblue', 'orange', 'lightgreen', 'pink']
-for i, metric in enumerate(metrics):
-    axs[i//2, i%2].barh(metrics_df["Model"], metrics_df[metric], color=colors[i])
-    axs[i//2, i%2].set_xlabel(metric)
+for i, metric in enumerate(["MAE", "MSE", "RMSE", "R² Score"]):
+    sns.barplot(x='Model', y=metric, data=metrics_df, ax=axs[i//2, i%2])
     axs[i//2, i%2].set_title(f'Model Comparison - {metric}')
+    axs[i//2, i%2].tick_params(axis='x', rotation=45)
 plt.tight_layout()
 plt.show()
-# Choosing the best model based on MSE (lower is better) and R² Score (higher is better)
-best_mse_model = metrics_df.loc[metrics_df['MSE'].idxmin()]
-best_r2_model = metrics_df.loc[metrics_df['R² Score'].idxmax()]
-# Summarizing the best models based on MSE and R² Score
-print(f"The best model based on MSE is {best_mse_model['Model']} with an MSE of {best_mse_model['MSE']:.3f}.")
-print(f"The best model based on R² Score is {best_r2_model['Model']} with an R² Score of {best_r2_model['R² Score']:.3f}.")
-# If the same model scores best on both metrics, it can be considered the overall best model
-if best_mse_model['Model'] == best_r2_model['Model']:
-    best_model_name = best_mse_model['Model']
-    best_model_r2_score = best_r2_model['R² Score']
-    print(f"\nOverall, the best model is {best_model_name} based on common criteria, with an R² Score of {best_model_r2_score:.3f}.")
-    # Plotting the performance of the best model
-    plt.figure(figsize=(10, 6))
-    plt.scatter(y_test, predictions[best_model_name], alpha=0.6)
-    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--', lw=2)  
-    plt.xlabel('Actual')
-    plt.ylabel('Predicted')
-    plt.title(f'Actual vs. Predicted Values for {best_model_name}')
-    plt.show()
+# Identify the Best Model Based on Initial Evaluation
+best_initial_model_name = metrics_df.loc[metrics_df['R² Score'].idxmax(), 'Model']
+best_initial_r2 = metrics_df.loc[metrics_df['R² Score'].idxmax(), 'R² Score']
+print(f"Best initial model based on R² Score: {best_initial_model_name} with R²: {best_initial_r2:.4f}")
+
+# Hyper-parameter Tuning by applying cross-validation with GridSearchCV
+if best_initial_model_name == "K-nearest neighbors (KNN)":
+    print("Hyper-parameter Tuning for KNN...")
+    param_grid = {
+        'n_neighbors': range(1, 31),
+        'weights': ['uniform', 'distance'],
+        'metric': ['euclidean', 'manhattan']
+    }
+    grid_search = GridSearchCV(KNeighborsRegressor(), param_grid, cv=10, scoring='r2')
+    grid_search.fit(X_train_normalized, y_train)
+    print(f"Best parameters for KNN: {grid_search.best_params_}")
+    print(f"Best score for KNN: {grid_search.best_score_:.4f}")
+    # Update KNN with the best parameters
+    best_model = grid_search.best_estimator_
 else:
-    print("\nConsideration is needed to choose the overall best model based on specific requirements.")
+    # For other models, you can add similar tuning processes or use the model as is
+    best_model = models[best_initial_model_name]
+
+# Final Model Selection and Evaluation
+best_model.fit(X_train_normalized, y_train)  
+final_predictions = best_model.predict(X_test_normalized)
+# Final evaluation metrics
+final_mae = mean_absolute_error(y_test, final_predictions)
+final_mse = mean_squared_error(y_test, final_predictions)
+final_rmse = np.sqrt(final_mse)
+final_r2 = r2_score(y_test, final_predictions)
+print(f"Final Model ({best_initial_model_name}) Evaluation: MAE: {final_mae:.4f}, MSE: {final_mse:.4f}, RMSE: {final_rmse:.4f}, R²: {final_r2:.4f}")
+# Visualization of the Final Model's Performance
+plt.figure(figsize=(10, 6))
+plt.scatter(y_test, final_predictions, alpha=0.6)
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--', lw=2)
+plt.xlabel('Actual')
+plt.ylabel('Predicted')
+plt.title(f'Actual vs. Predicted - {best_initial_model_name}')
+plt.show()
