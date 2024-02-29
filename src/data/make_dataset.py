@@ -247,25 +247,20 @@ print(f"Original dataset shape: {data_set.shape}")
 print(f"Cleaned dataset shape: {dataset_cleaned.shape}")
 # Now, 'dataset_cleaned' is my working dataset 
 
-# First, split your dataset into training and test sets before any encoding or scaling
-X = dataset_cleaned.drop('price', axis=1)
-y = dataset_cleaned['price']
-print("Shape of the feature matrix (X):", X.shape)
-print("Shape of the target variable (y):", y.shape)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=2)
-print("Number of training samples:", X_train.shape[0])
-print("Number of test samples:", X_test.shape[0])
-# Now, 'X_train' and 'y_train' are your training data, 'X_test' and 'y_test' are your test data
-
 # Encoding the independent categorical variables using 'MEstimateEncoder'
 encoder = ce.MEstimateEncoder(cols=['city', 'street', 'statezip'], m=0.5)
-X_train_encoded = encoder.fit_transform(X_train, y_train)
-X_test_encoded = encoder.transform(X_test)
-
-# Normalizing the 'X' feature matrix
+# We don't drop 'price' here as we haven't split our data yet
+dataset_encoded = encoder.fit_transform(dataset_cleaned.drop('price', axis=1), dataset_cleaned['price'])
+# Split the dataset into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(dataset_encoded, dataset_cleaned['price'],  
+    test_size=0.2, random_state=2
+)
+print("Number of training samples:", X_train.shape[0])
+print("Number of test samples:", X_test.shape[0])
+# Normalize the feature matrix for the training and test sets
 scaler = StandardScaler()
-X_train_normalized = scaler.fit_transform(X_train_encoded)
-X_test_normalized = scaler.transform(X_test_encoded)
+X_train_normalized = scaler.fit_transform(X_train)
+X_test_normalized = scaler.transform(X_test)
 print("Shape of the normalized feature training matrix (X):", X_train_normalized.shape)
 print("Shape of the normalized feature testing matrix (X):", X_test_normalized.shape)
 
@@ -337,7 +332,7 @@ if best_initial_model_name == "K-nearest neighbors (KNN)":
     # Update KNN with the best parameters
     best_model = grid_search.best_estimator_
 else:
-    # For other models, you can add similar tuning processes or use the model as is
+    # For other models, I will add similar tuning processes or use the model as is
     best_model = models[best_initial_model_name]
 
 # Final Model Selection and Evaluation
