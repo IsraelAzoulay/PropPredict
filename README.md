@@ -1,2 +1,2 @@
-# PropPredictNew
-Machine Learning Real Estate Price Prediction Engine
+# PropPredict
+Currently developing a Machine Learning Real Estate Price Prediction Engine
